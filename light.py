@@ -1,19 +1,6 @@
-import os
-
-# --- CRITICAL CONTAINER FIXES ---
-# These must run BEFORE any other imports to prevent "Bus error" and "pthread" crashes.
-# This prevents the AI libraries from fighting over CPU resources in a container.
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
-# Force standard memory allocation to avoid /dev/shm crash inside containers
-os.environ["PYTORCH_NO_CUDA_MEMORY_CACHING"] = "1" 
-
-import cv2
+\import cv2
 import numpy as np
+import os
 import threading
 import time
 import queue
@@ -23,14 +10,13 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, HTMLResponse
 from ultralytics import YOLO
 from insightface.app import FaceAnalysis
-import onnxruntime
 
 # --- CONFIGURATION ---
 VIDEO_SOURCE = "RTSP"
 # RTSP_URL = "rtsp://admin:mysecretpassword@100.114.210.58:8554/cam"
 RTSP_URL = "rtsp://admin:mysecretpassword@100.114.210.58:8554/cam"
 
-# Set to "WEB" for servers (headless). Set to "LOCAL" only if you have a monitor attached.
+# If on a headless server, ALWAYS use "WEB"
 OUTPUT_MODE = "WEB" 
 HTTP_PORT = 5006
 JPEG_QUALITY = 70 
@@ -52,10 +38,12 @@ app = FastAPI()
 
 # --- 1. SETUP INSIGHTFACE (GPU ENABLED) ---
 print(f"Initializing InsightFace...")
-# Debug check to see if CUDA is actually visible to the library
+
+# CHECK: Print available providers to debug if CUDA is missing
+import onnxruntime
 print(f"Available ONNX Providers: {onnxruntime.get_available_providers()}")
 
-# Prioritize CUDA. If CUDA is not found, it falls back to CPU.
+# Prioritize CUDA. If CUDA is not found, it will warn and fall back to CPU.
 face_app = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
 face_app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
 
@@ -146,6 +134,8 @@ def recognition_worker():
 # --- 5. WORKER: RTSP ---
 def capture_rtsp():
     global rtsp_frame
+    # For servers, using CUDA for decoding (cv2.CAP_CUDA) is possible but complex. 
+    # Sticking to CPU decoding (FFmpeg) is safer and usually fast enough.
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
     cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
     while rtsp_active:
@@ -163,16 +153,16 @@ def draw_ui(img, box, track_id, name, is_processing, keypoints=None):
     x1, y1, x2, y2 = map(int, box)
     
     if name == "...":
-        color = (0, 255, 255) # Yellow
+        color = (0, 255, 255)
         label_text = "Scanning..."
     elif is_processing:
         color = (0, 255, 0)
         label_text = f"{name} (?)" 
     elif name == "Unknown":
-        color = (150, 150, 150) # Grey
+        color = (150, 150, 150)
         label_text = name
     else:
-        color = (0, 255, 0) # Green
+        color = (0, 255, 0)
         label_text = name
 
     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
@@ -235,7 +225,7 @@ def processing_loop():
     global output_frame, rtsp_active
     
     # Init YOLO on GPU
-    print("Initializing YOLO...")
+    print("Initializing YOLO on GPU...")
     model = YOLO(yolo_model)
     if torch.cuda.is_available():
         model.to('cuda')
