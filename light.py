@@ -1,4 +1,4 @@
-\import cv2
+import cv2
 import numpy as np
 import os
 import threading
@@ -12,12 +12,12 @@ from ultralytics import YOLO
 from insightface.app import FaceAnalysis
 
 # --- CONFIGURATION ---
-VIDEO_SOURCE = "RTSP"
+VIDEO_SOURCE = "WEBCAM"
 # RTSP_URL = "rtsp://admin:mysecretpassword@100.114.210.58:8554/cam"
 RTSP_URL = "rtsp://admin:mysecretpassword@100.114.210.58:8554/cam"
 
 # If on a headless server, ALWAYS use "WEB"
-OUTPUT_MODE = "WEB" 
+OUTPUT_MODE = "LOCAL" 
 HTTP_PORT = 5006
 JPEG_QUALITY = 70 
 
