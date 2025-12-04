@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Body & Face Detection</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            /* Slate 900 */
+            color: white;
+            overflow: hidden;
+            /* Prevent scrolling */
+        }
+
+        /* Container to keep video and canvas perfectly aligned */
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 1280px;
+            aspect-ratio: 16/9;
+            margin: 0 auto;
+            border-radius: 1rem;
+            overflow: hidden;
+            background: #000;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
+        }
+
+        video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            /* Mirror effect */
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            /* Mirror effect to match video */
+            z-index: 10;
+        }
+
+        .hud-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 20;
+            pointer-events: none;
+        }
+
+        /* Loading Spinner */
+        .loader {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-left-color: #38bdf8;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .btn {
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+    </style>
+</head>
+
+<body class="flex flex-col items-center justify-center min-h-screen p-4">
+
+    <!-- Header -->
+    <header class="w-full max-w-6xl flex justify-between items-center mb-6">
+        <div>
+            <h1
+                class="text-2xl md:text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500">
+                Vision AI Tracker
+            </h1>
+            <p class="text-slate-400 text-sm mt-1">Real-time Body & Face Detection</p>
+        </div>
+        <div id="status-badge"
+            class="px-3 py-1 rounded-full text-xs font-semibold bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse"></div>
+            Loading Models...
+        </div>
+    </header>
+
+    <!-- Main Viewport -->
+    <main class="w-full flex flex-col items-center">
+
+        <div class="video-container group">
+            <!-- The Webcam Feed -->
+            <video id="webcam" autoplay playsinline></video>
+            <!-- The Drawing Layer -->
+            <canvas id="output_canvas"></canvas>
+
+            <!-- Start Overlay (Visible initially) -->
+            <div id="start-overlay"
+                class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 z-30 backdrop-blur-sm transition-opacity duration-500">
+                <div id="loading-spinner" class="loader mb-4"></div>
+                <p id="loading-text" class="text-slate-300 mb-6 font-medium">Initializing AI Models...</p>
+
+                <button id="enableWebcamButton"
+                    class="hidden px-8 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-full font-bold text-white shadow-lg btn flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                        stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    Enable Camera
+                </button>
+                <p id="error-msg" class="hidden text-red-400 mt-4 text-sm max-w-md text-center"></p>
+            </div>
+
+            <!-- HUD Overlay (Visible when running) -->
+            <div class="hud-overlay">
+                <div class="flex flex-col gap-2">
+                    <div
+                        class="bg-black/50 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 text-xs font-mono text-cyan-300">
+                        FPS: <span id="fps-counter" class="text-white">0</span>
+                    </div>
+                    <div
+                        class="flex items-center gap-2 text-xs font-medium text-slate-300 bg-black/50 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10">
+                        <span class="w-3 h-3 rounded-sm bg-purple-500 inline-block"></span> Body
+                        <span class="w-3 h-3 rounded-sm bg-cyan-400 inline-block ml-2"></span> Face
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Controls -->
+    <div class="mt-6 flex gap-4">
+        <button id="toggle-cam"
+            class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled>
+            Stop Camera
+        </button>
+    </div>
+
+    <!-- MediaPipe Logic -->
+    <script type="module">
+        import {
+            ObjectDetector,
+            FaceDetector,
+            FilesetResolver
+        } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.2";
+
+        // --- Configuration ---
+        const DEMO_SECTION = document.getElementById("start-overlay");
+        const VIDEO = document.getElementById("webcam");
+        const CANVAS = document.getElementById("output_canvas");
+        const CTX = CANVAS.getContext("2d");
+        const ENABLE_BTN = document.getElementById("enableWebcamButton");
+        const LOADING_SPINNER = document.getElementById("loading-spinner");
+        const LOADING_TEXT = document.getElementById("loading-text");
+        const STATUS_BADGE = document.getElementById("status-badge");
+        const ERROR_MSG = document.getElementById("error-msg");
+        const FPS_COUNTER = document.getElementById("fps-counter");
+        const TOGGLE_BTN = document.getElementById("toggle-cam");
+
+        let objectDetector;
+        let faceDetector;
+        let runningMode = "VIDEO";
+        let lastVideoTime = -1;
+        let animationFrameId;
+        let lastFrameTime = performance.now();
+        let frameCount = 0;
+        let fps = 0;
+
+        // --- Initialization ---
+
+        async function initializeModels() {
+            try {
+                // Load WASM binaries
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.2/wasm"
+                );
+
+                // Initialize Face Detector (Blazing fast)
+                faceDetector = await FaceDetector.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite`,
+                        delegate: "GPU"
+                    },
+                    runningMode: runningMode,
+                    minDetectionConfidence: 0.5
+                });
+
+                // Initialize Object Detector (Configured for "Person")
+                objectDetector = await ObjectDetector.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite`,
+                        delegate: "GPU"
+                    },
+                    scoreThreshold: 0.4,
+                    runningMode: runningMode,
+                    categoryAllowlist: ["person"] // Optimization: Only look for people
+                });
+
+                // UI Updates
+                LOADING_SPINNER.classList.add("hidden");
+                LOADING_TEXT.classList.add("hidden");
+                ENABLE_BTN.classList.remove("hidden");
+                STATUS_BADGE.className = "px-3 py-1 rounded-full text-xs font-semibold bg-green-500/20 text-green-400 border border-green-500/30 flex items-center gap-2";
+                STATUS_BADGE.innerHTML = `<div class="w-2 h-2 rounded-full bg-green-400"></div>Ready`;
+
+            } catch (error) {
+                console.error(error);
+                LOADING_SPINNER.classList.add("hidden");
+                LOADING_TEXT.classList.add("hidden");
+                ERROR_MSG.textContent = "Failed to load AI models. Please check your connection.";
+                ERROR_MSG.classList.remove("hidden");
+            }
+        }
+
+        initializeModels();
+
+        // --- Webcam Handling ---
+
+        function hasGetUserMedia() {
+            return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+        }
+
+        if (hasGetUserMedia()) {
+            ENABLE_BTN.addEventListener("click", enableCam);
+        } else {
+            console.warn("getUserMedia() is not supported by your browser");
+            ERROR_MSG.textContent = "Webcam not supported in this browser.";
+            ERROR_MSG.classList.remove("hidden");
+        }
+
+        async function enableCam() {
+            if (!objectDetector || !faceDetector) {
+                alert("Wait! Models are still loading.");
+                return;
+            }
+
+            // Hide overlay
+            DEMO_SECTION.classList.add("opacity-0", "pointer-events-none");
+            TOGGLE_BTN.disabled = false;
+
+            // Activate Webcam
+            try {
+                const constraints = {
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        facingMode: "user"
+                    }
+                };
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                VIDEO.srcObject = stream;
+
+                VIDEO.addEventListener("loadeddata", predictWebcam);
+            } catch (err) {
+                console.error(err);
+                ERROR_MSG.textContent = "Could not access camera. Please allow permissions.";
+                ERROR_MSG.classList.remove("hidden");
+                DEMO_SECTION.classList.remove("opacity-0", "pointer-events-none");
+            }
+        }
+
+        TOGGLE_BTN.addEventListener("click", () => {
+            if (VIDEO.srcObject) {
+                const tracks = VIDEO.srcObject.getTracks();
+                tracks.forEach(track => track.stop());
+                VIDEO.srcObject = null;
+                cancelAnimationFrame(animationFrameId);
+                CTX.clearRect(0, 0, CANVAS.width, CANVAS.height);
+                DEMO_SECTION.classList.remove("opacity-0", "pointer-events-none");
+                TOGGLE_BTN.disabled = true;
+                ENABLE_BTN.classList.remove("hidden");
+                TOGGLE_BTN.innerText = "Stop Camera";
+            }
+        });
+
+        // --- Main Prediction Loop ---
+
+        async function predictWebcam() {
+            if (!VIDEO.srcObject) return;
+
+            // Resize canvas to match video stream dimensions
+            if (CANVAS.width !== VIDEO.videoWidth || CANVAS.height !== VIDEO.videoHeight) {
+                CANVAS.width = VIDEO.videoWidth;
+                CANVAS.height = VIDEO.videoHeight;
+            }
+
+            let startTimeMs = performance.now();
+
+            // Detect if we have a new video frame to process
+            if (VIDEO.currentTime !== lastVideoTime) {
+                lastVideoTime = VIDEO.currentTime;
+
+                // 1. Run Object Detection (Bodies)
+                const objectResults = objectDetector.detectForVideo(VIDEO, startTimeMs);
+
+                // 2. Run Face Detection
+                const faceResults = faceDetector.detectForVideo(VIDEO, startTimeMs);
+
+                // 3. Clear & Draw
+                CTX.clearRect(0, 0, CANVAS.width, CANVAS.height);
+
+                // Draw Bodies (Purple)
+                if (objectResults.detections) {
+                    for (const detection of objectResults.detections) {
+                        // "Person" class is already filtered via categoryAllowlist in init
+                        drawBox(detection.boundingBox, "#a855f7", "Body", detection.categories[0].score); // Purple-500
+                    }
+                }
+
+                // Draw Faces (Cyan)
+                if (faceResults.detections) {
+                    for (const detection of faceResults.detections) {
+                        drawBox(detection.boundingBox, "#22d3ee", "Face", detection.categories[0].score); // Cyan-400
+                    }
+                }
+            }
+
+            // Calculate FPS
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFrameTime >= 1000) {
+                fps = frameCount;
+                frameCount = 0;
+                lastFrameTime = now;
+                FPS_COUNTER.innerText = fps;
+            }
+
+            animationFrameId = window.requestAnimationFrame(predictWebcam);
+        }
+
+        // --- Drawing Utility ---
+
+        function drawBox(box, color, label, score) {
+            const { originX, originY, width, height } = box;
+
+            CTX.save();
+
+            // 1. Draw Glassy Fill
+            CTX.fillStyle = color + "20"; // 20 hex = ~12% opacity
+            CTX.fillRect(originX, originY, width, height);
+
+            // 2. Draw Stroke
+            CTX.strokeStyle = color;
+            CTX.lineWidth = 3;
+            CTX.lineJoin = "round";
+
+            // Create a glowing effect
+            CTX.shadowColor = color;
+            CTX.shadowBlur = 10;
+            CTX.strokeRect(originX, originY, width, height);
+
+            // 3. Draw Label Background
+            const scorePct = Math.round(score * 100) + "%";
+            const text = `${label} ${scorePct}`;
+            CTX.font = "bold 14px Inter, sans-serif";
+            const textWidth = CTX.measureText(text).width;
+
+            CTX.shadowBlur = 0; // Reset shadow for text bg
+            CTX.fillStyle = color;
+            CTX.fillRect(originX, originY - 26, textWidth + 16, 26);
+
+            // 4. Draw Label Text
+            CTX.fillStyle = "#000000";
+            CTX.fillText(text, originX + 8, originY - 8);
+
+            CTX.restore();
+        }
+    </script>
+</body>
+
+</html>
