@@ -5,45 +5,46 @@ import threading
 import time
 import queue
 import uvicorn
+import torch
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, HTMLResponse
 from ultralytics import YOLO
 from insightface.app import FaceAnalysis
 
 # --- CONFIGURATION ---
-# 1. Choose your Input
-VIDEO_SOURCE = "RTSP"  # Options: "WEBCAM" or "RTSP"
+VIDEO_SOURCE = "RTSP"
+# RTSP_URL = "rtsp://admin:mysecretpassword@100.114.210.58:8554/cam"
 RTSP_URL = "rtsp://admin:mysecretpassword@100.114.210.58:8554/cam"
 
-# 2. Choose your Output
-OUTPUT_MODE = "WEB"  # Options: "LOCAL" (Pop-up Window) or "WEB" (Browser Stream)
+# If on a headless server, ALWAYS use "WEB"
+OUTPUT_MODE = "WEB" 
 HTTP_PORT = 5006
-JPEG_QUALITY = 70      # 50-70 is fast, 95 is high quality (for Web Mode)
+JPEG_QUALITY = 70 
 
-# 3. AI Config
 yolo_model = "yolo11n-pose.pt"
 FACES_FOLDER = 'faces'
 CONFIDENCE_THRESHOLD = 0.6
 RECOGNITION_INTERVAL = 30  
 
-# --- GLOBAL SHARED VARIABLES ---
+# --- GLOBAL VARIABLES ---
 rtsp_frame = None
 rtsp_lock = threading.Lock()
 rtsp_active = True
-
 recognition_queue = queue.Queue()
 track_history = {} 
-
-# For Web Mode Only
 output_frame = None
 output_lock = threading.Lock()
-
-# FastAPI App
 app = FastAPI()
 
-# --- 1. SETUP INSIGHTFACE ---
+# --- 1. SETUP INSIGHTFACE (GPU ENABLED) ---
 print(f"Initializing InsightFace...")
-face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+
+# CHECK: Print available providers to debug if CUDA is missing
+import onnxruntime
+print(f"Available ONNX Providers: {onnxruntime.get_available_providers()}")
+
+# Prioritize CUDA. If CUDA is not found, it will warn and fall back to CPU.
+face_app = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
 face_app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.3)
 
 known_embeddings = []
@@ -55,13 +56,8 @@ if os.path.exists(FACES_FOLDER):
     for root, dirs, files in os.walk(FACES_FOLDER):
         for filename in files:
             if filename.startswith('.'): continue
-            
             parent_folder = os.path.basename(root)
-            if parent_folder == FACES_FOLDER:
-                name = os.path.splitext(filename)[0]
-            else:
-                name = parent_folder
-
+            name = os.path.splitext(filename)[0] if parent_folder == FACES_FOLDER else parent_folder
             if not filename.lower().endswith(('.png', '.jpg', '.jpeg')): continue
             
             path = os.path.join(root, filename)
@@ -98,7 +94,7 @@ def enhance_face(img_crop):
     img_crop = cv2.filter2D(src=img_crop, ddepth=-1, kernel=kernel)
     return img_crop
 
-# --- 4. BACKGROUND WORKER: RECOGNITION ---
+# --- 4. WORKER: RECOGNITION ---
 def recognition_worker():
     while True:
         try:
@@ -108,6 +104,8 @@ def recognition_worker():
 
         track_id, face_crop = task
         enhanced_crop = enhance_face(face_crop)
+        
+        # InsightFace runs on GPU here if configured correctly
         faces = face_app.get(enhanced_crop)
         
         if len(faces) > 0:
@@ -133,9 +131,11 @@ def recognition_worker():
             track_history[track_id]['is_processing'] = False
         recognition_queue.task_done()
 
-# --- 5. BACKGROUND WORKER: RTSP ---
+# --- 5. WORKER: RTSP ---
 def capture_rtsp():
     global rtsp_frame
+    # For servers, using CUDA for decoding (cv2.CAP_CUDA) is possible but complex. 
+    # Sticking to CPU decoding (FFmpeg) is safer and usually fast enough.
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
     cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
     while rtsp_active:
@@ -153,16 +153,16 @@ def draw_ui(img, box, track_id, name, is_processing, keypoints=None):
     x1, y1, x2, y2 = map(int, box)
     
     if name == "...":
-        color = (0, 255, 255) # Yellow
+        color = (0, 255, 255)
         label_text = "Scanning..."
     elif is_processing:
         color = (0, 255, 0)
         label_text = f"{name} (?)" 
     elif name == "Unknown":
-        color = (150, 150, 150) # Grey
+        color = (150, 150, 150)
         label_text = name
     else:
-        color = (0, 255, 0) # Green
+        color = (0, 255, 0)
         label_text = name
 
     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
@@ -182,7 +182,6 @@ def draw_ui(img, box, track_id, name, is_processing, keypoints=None):
             fx2 = min(img.shape[1], int(center_x + (box_width / 2)))
             fy1 = max(0, int(center_y - (box_height / 2)))
             fy2 = min(img.shape[0], int(center_y + (box_height / 2)))
-            
             cv2.rectangle(img, (fx1, fy1), (fx2, fy2), (0, 255, 255), 2)
 
     font_scale = 0.6
@@ -199,7 +198,7 @@ def draw_ui(img, box, track_id, name, is_processing, keypoints=None):
 async def index():
     return """
     <html>
-    <head><title>FastAPI Stream</title></head>
+    <head><title>GPU Stream</title></head>
     <body style="background:black; margin:0; display:flex; align-items:center; justify-content:center; height:100vh;">
         <img src="/video_feed" style="max-width:100%; max-height:100%; border: 2px solid #333;">
     </body>
@@ -215,28 +214,34 @@ def generate_frames():
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
             (flag, encodedImage) = cv2.imencode(".jpg", output_frame, encode_param)
             if not flag: continue
-            
         yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
 
 @app.get("/video_feed")
 async def video_feed():
     return StreamingResponse(generate_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-# --- 8. MAIN PROCESSING LOOP (HYBRID) ---
+# --- 8. PROCESSING LOOP ---
 def processing_loop():
     global output_frame, rtsp_active
+    
+    # Init YOLO on GPU
+    print("Initializing YOLO on GPU...")
     model = YOLO(yolo_model)
+    if torch.cuda.is_available():
+        model.to('cuda')
+        print("YOLO is using CUDA (GPU).")
+    else:
+        print("WARNING: CUDA not found. YOLO running on CPU.")
+
     frame_count = 0
     cap = None
 
     if VIDEO_SOURCE == "RTSP":
-        print("Processing Loop: Waiting for RTSP frame...")
         while rtsp_frame is None: time.sleep(0.1)
     else:
         cap = cv2.VideoCapture(0)
 
     while True:
-        # A. Acquire Frame
         if VIDEO_SOURCE == "RTSP":
             with rtsp_lock:
                 if rtsp_frame is None: continue
@@ -248,7 +253,7 @@ def processing_loop():
 
         frame_count += 1
 
-        # B. YOLO Tracking
+        # YOLO Tracking (GPU Accelerated)
         results = model.track(frame, persist=True, verbose=False, stream=True)
         annotated_frame = frame.copy()
 
@@ -265,7 +270,6 @@ def processing_loop():
                 for box, track_id, kpts in zip(boxes, track_ids, all_keypoints):
                     if track_id not in track_history:
                         track_history[track_id] = {'name': "...", 'last_attempt': 0, 'is_processing': False}
-
                     data = track_history[track_id]
                     is_time_to_check = (frame_count - data['last_attempt']) > RECOGNITION_INTERVAL
                     
@@ -273,54 +277,39 @@ def processing_loop():
                         x1, y1, x2, y2 = map(int, box)
                         h, w, _ = frame.shape
                         face_crop = frame[max(0, y1-40):min(h, y2+40), max(0, x1-20):min(w, x2+20)]
-
                         if face_crop.size > 0:
                             track_history[track_id]['is_processing'] = True
                             track_history[track_id]['last_attempt'] = frame_count
                             recognition_queue.put( (track_id, face_crop) )
-
                     draw_ui(annotated_frame, box, track_id, data['name'], data['is_processing'], kpts)
 
-        # C. Output Handling (The Switch)
         if OUTPUT_MODE == "WEB":
-            # Just update the global variable for the web server
             with output_lock:
                 output_frame = annotated_frame.copy()
             time.sleep(0.001)
-            
-        else: # LOCAL MODE
-            # Display directly using OpenCV
-            cv2.imshow('Smart Face Recognition', annotated_frame)
-            if cv2.waitKey(1) & 0xFF == 27: # ESC to quit
-                rtsp_active = False # Signal threads to stop
+        else:
+            cv2.imshow('GPU Face Rec', annotated_frame)
+            if cv2.waitKey(1) & 0xFF == 27:
+                rtsp_active = False
                 break
 
-    # Cleanup if loop ends
     if cap: cap.release()
     cv2.destroyAllWindows()
 
-# --- 9. STARTUP LOGIC ---
+# --- 9. STARTUP ---
 if __name__ == '__main__':
-    # 1. Start RTSP Reader (Always needed for RTSP)
     if VIDEO_SOURCE == "RTSP":
         t_rtsp = threading.Thread(target=capture_rtsp, daemon=True)
         t_rtsp.start()
     
-    # 2. Start Face Recognition Worker (Always needed)
     t_rec = threading.Thread(target=recognition_worker, daemon=True)
     t_rec.start()
     
-    # 3. Handle Modes (CRITICAL FOR MAC)
     if OUTPUT_MODE == "WEB":
         print(f"STARTING WEB MODE. Go to http://0.0.0.0:{HTTP_PORT}")
-        # Run processing in a thread so Main Thread can run the Server
         t_main = threading.Thread(target=processing_loop, daemon=True)
         t_main.start()
-        
-        # Start Server on Main Thread
         uvicorn.run(app, host='0.0.0.0', port=HTTP_PORT, log_level="warning")
-        
-    else: # LOCAL MODE
-        print("STARTING LOCAL MODE. Press ESC to quit.")
-        # Run processing on Main Thread (Required for Mac GUI)
+    else: 
+        print("STARTING LOCAL MODE.")
         processing_loop()
