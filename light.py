@@ -92,12 +92,26 @@ if os.path.exists(FACES_FOLDER):
             img = cv2.imread(path)
             if img is None: continue
             
+            # --- UPDATED DETECTION LOGIC: ROTATION RETRY ---
             faces = face_app.get(img)
+            
+            # If no face found, try rotating 90 degrees clockwise up to 3 times
+            # This fixes issues with phone photos that load sideways in OpenCV
+            if len(faces) == 0:
+                img_copy = img.copy()
+                for _ in range(3):
+                    img_copy = cv2.rotate(img_copy, cv2.ROTATE_90_CLOCKWISE)
+                    faces = face_app.get(img_copy)
+                    if len(faces) > 0:
+                        break
+
             if len(faces) > 0:
                 faces.sort(key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
                 known_embeddings.append(faces[0].embedding)
                 known_names.append(name)
                 print(f"  [OK] Learned: {name}")
+            else:
+                print(f"  [WARN] Skipped {filename}: No face detected (even after rotation).")
 else:
     print(f"Warning: Folder '{FACES_FOLDER}' not found.")
 
